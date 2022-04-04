@@ -1,0 +1,450 @@
+---
+title: "Antidepressant Medications Pre vs Post COVID19 - (S)ARIMA Modelling on individual data"
+output:
+  html_notebook: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r}
+if(!require(tidyverse)) install.packages("tidyverse")
+if(!require(zoo)) install.packages("zoo")
+if(!require(tseries)) install.packages("tseries")
+if(!require(fpp2)) install.packages("fpp2")
+
+
+library(tidyverse)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(lubridate)
+library(zoo)
+library(tseries)
+library(fpp2)
+
+
+```
+
+
+```{r}
+
+individual_prescriptions <- read_csv("Individual Monthly Prescriptions _ Analysis Ready.csv",
+                          trim_ws = TRUE,
+                          n_max = 106,
+                          col_types = cols(MONTH_YEAR = col_date(format = "%b-%y")))
+
+```
+
+```{r}
+str(individual_prescriptions)
+```
+
+
+Create new variables for MONTH & YEAR
+```{r}
+individual_prescriptions <- individual_prescriptions %>%
+  mutate(
+    YEAR = year(MONTH_YEAR),
+    MONTH = month(MONTH_YEAR, label=T)
+  )
+```
+
+
+```{r}
+individual_prescriptions %>% 
+  ggplot(aes(x=MONTH, y=n_antidepressants))+
+  geom_boxplot()+
+  labs(
+    title = paste("Variation across Months in Individuals in Receipt of Antidepressant Prescriptions"),
+    x = "Month",
+    y = "Individuals (n)"
+  )+
+  theme_minimal()
+
+```
+
+
+```{r}
+individual_prescriptions %>% 
+  ggplot(aes(x=as.factor(YEAR), y=n_antidepressants))+
+  geom_bar(stat="identity")+
+  facet_wrap(~MONTH)+
+  labs(
+    title = paste("Yearly Trends for each Month"),
+    x = "Month",
+    y = "Individuals in receipt of antidepressants (n)"
+  )+
+  theme_minimal()
+
+```
+
+
+
+```{r}
+individual_prescriptions %>% 
+  ggplot(aes(x=MONTH_YEAR, y=n_antidepressants))+
+  geom_line()+
+  labs(
+    title = paste("Trend in Prescriptions of antidepressant Medication"),
+    y = "Individuals in receipt of antidepressants (n)"
+  )+
+  theme_minimal()
+```
+
+
+
+Split antidepressant data into PRE and POST COVID
+```{r}
+AD_precovid <- individual_prescriptions$n_antidepressants[1:98]      # PRECOVID Jan 2012 to Feb 2020
+AD_postcovid <- individual_prescriptions$n_antidepressants[99:106]   # POSTCOVID Mar 2020 to Oct 2020
+
+```
+
+
+Create time series for precovid antidepressant data
+```{r}
+
+AD_precovid_ts <- ts(AD_precovid, 
+                       start=c(2012,1),  #first in time series
+                       freq=12)          # i.e. monthly data
+
+```
+
+
+
+Plot of monthly antidepressant prescriptions over the Precovid time frame
+```{r}
+
+autoplot(AD_precovid_ts) + ggtitle("Time Plot: Individuals in Receipt of Antidepressant Prescriptions per Month")+
+  ylab("Number of Individuals in Receipt of Prescriptions")
+
+```
+
+
+
+Take first difference in data to remove upward trend and dip in 2017/18
+```{r}
+diff_AD_precovid <- diff(AD_precovid_ts)
+
+```
+
+
+
+Plot the differenced values (i.e. the month to month differences in prescription numbers)
+```{r}
+autoplot(diff_AD_precovid) + ggtitle("Time Plot: Monthly Change in Individuals in Receipt of antidepressant Prescriptions")+
+  ylab("Number of Prescriptions")
+
+```
+
+
+
+Check for seasonality in stationary data set (i.e. the differenced data)
+```{r}
+ggseasonplot(diff_AD_precovid) + ggtitle("Seasonal Plot: Change in Monthly Prescriptions")+
+  ylab("Number of Individuals")
+
+```
+
+
+Alternative view of seasonal variation
+```{r}
+
+ggsubseriesplot(diff_AD_precovid) + ggtitle("Seasonal Plot: Change in Monthly Prescriptions")+
+  ylab("Number of Individuals")
+
+```
+
+
+
+
+## Model Building
+
+
+1. Benchmark method: Seasonal naiive method
+i.e. Each months value is equal to the next +/- random error
+```{r}
+fit <-snaive(diff_AD_precovid)  # Use differenced data (i.e. the un-trended data, "diff_AD_freq")
+
+summary(fit)          
+
+checkresiduals(fit)   
+```
+
+
+
+
+2. Exponential smoothing model
+```{r}
+fit_ets <- ets(AD_precovid_ts)     # ets() tries many ETS models and chooses the best performing
+                                   # use the actual (not differenced) data
+summary(fit_ets)
+
+checkresiduals(fit_ets)
+
+```
+
+
+
+3. ARIMA model
+```{r}
+
+fit_arima <- auto.arima(AD_precovid_ts,       # Requires stationary data 
+                        d=1,                  # d1 to take first difference of data to remove trend
+                        D=1,                  # D1 to take the first seasonal difference to remove seasonal trends
+                        stepwise = F,         # if true, the algorithm would try a smaller number to save time (costs accuracy)
+                        approximation = F,    # if true, the AIC would be an approximation to save time (costs accuracy)
+                        trace = T             # prints models as they run
+                        )
+
+
+
+```
+
+
+
+
+Check performance of ARIMA on the precovid data
+```{r}
+summary(fit_arima)
+checkresiduals(fit_arima)
+
+```
+
+
+
+Use the ARIMA model to forecast data into POSTCOVID timeframe
+```{r}
+forecast_arima <- forecast(fit_arima,
+                           h=8) # forecast 8 months (March 2020 to Oct 2020)
+
+autoplot(forecast_arima) # additional argument include = 12, would include only the last 12 months in precovid time frame
+
+```
+
+
+```{r}
+summary(forecast_arima)
+
+```
+
+
+Extract the forecast values with the upper and lower 80 and 95% CI limits, and view the actual values for the POSTCOVID time frame
+```{r}
+forecast_arima_df <- data.frame(forecast_arima$mean)
+lower_df <- as.data.frame(forecast_arima$lower,row.names = FALSE)
+upper_df <- as.data.frame(forecast_arima$upper,row.names = FALSE)
+AD_postcovid_df <- as.data.frame(AD_postcovid)
+
+
+forecast_arima_df 
+lower_df 
+upper_df 
+AD_postcovid_df 
+
+```
+
+
+
+Pull the values from forecast and actual values together in a data frame
+```{r}
+forecast_arima_df <- cbind(forecast_arima_df, lower_df, upper_df, AD_postcovid_df)
+
+column_names <-  c("mean", "lower80", "lower95", "upper80", "upper95", "actual")
+
+colnames(forecast_arima_df) <- column_names
+
+MONTH <- c("Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct")
+forecast_arima_df <- forecast_arima_df %>%
+  add_column(MONTH, .before = "mean")
+
+forecast_arima_df$MONTH <- factor(forecast_arima_df$MONTH, levels = c("Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct"))
+
+forecast_arima_df
+```
+
+
+
+Visualise the forcast prescription rates (with confidence intervals) versus the actual prescription rates in the POSTCOVID timeframe
+```{r}
+ggplot(data = forecast_arima_df,
+       aes(x=forecast_arima_df$MONTH,y=mean, group=1))+
+  geom_point()+
+  geom_line()+
+  geom_ribbon(aes(ymin=forecast_arima_df$lower95, ymax=forecast_arima_df$upper95), linetype=2, alpha=0.1)+
+  geom_ribbon(aes(ymin=forecast_arima_df$lower80, ymax=forecast_arima_df$upper80), linetype=2, alpha=0.2)+
+  geom_point(aes(x=forecast_arima_df$MONTH, y=forecast_arima_df$actual, group=1, col="red"))+
+  geom_line(aes(x=forecast_arima_df$MONTH, y=forecast_arima_df$actual, group=1, col="red"))+
+  labs(
+    title = paste("Antidepressant medication prescriptions immediately after COVID-19 lockdown"),
+    subtitle = paste("forecast vs. actual values"),
+    caption = paste("black = forecast values\nred = actual values\ndark grey band = 80% confidence interval\nlight grey band = 95% confidence interval"),
+    x = "Month",
+    y = "Antidepressant prescriptions (n)"
+  )+
+  theme_minimal()+
+  theme(legend.position = "none")
+```
+
+
+
+## MODEL ON DATA SET WITH 2017/18 REMOVED
+
+Replace 2017 and 2018 data with "NA"
+```{r}
+
+AD_precovid_missing <- AD_precovid
+AD_precovid_missing[61:84] <- NA      # 61=Jan 2017, 84=Dec2018
+AD_precovid_missing
+
+```
+
+
+
+Take first difference in data to remove upward trend
+```{r}
+
+diff_AD_precovid_missing <- diff(AD_precovid_missing_ts)
+
+```
+
+
+
+1. Benchmark method: Seasonal naiive method
+i.e. Each months value is equal to the next +/- random error
+```{r}
+
+fit_missing_AD <-snaive(diff_AD_precovid_missing)  # Use differenced data (i.e. the un-trended data, "diff_AD_freq")
+
+summary(fit_missing_AD)          ## residual SD = 1521.5445  
+
+checkresiduals(fit_missing_AD)   ## residuals over time look to be random and normally distributed- good
+                      ## most error terms fall within 95% CI, one large at lag1
+
+
+```
+
+
+
+
+2. Exponential smoothing model
+```{r}
+
+
+
+fit_ets_missing_AD <- ets(AD_precovid_missing_ts)     # ets() tries many ETS models and chooses the best performing
+                                           # use the actual (not differenced) data, as it can use trends
+summary(fit_ets_missing_AD)
+
+checkresiduals(fit_ets_missing_AD)
+
+```
+
+
+
+
+3. ARIMA model
+```{r}
+
+fit_arima_missing_AD <- auto.arima(AD_precovid_missing_ts,       # Requires stationary data 
+                        d=1,                          # d1 to take first difference of data to remove trend
+                        D=1,                          # D1 to take the first seasonal difference to remove seasonal trends
+                        stepwise = F,                 # if true, the algorithm would try a smaller number to save time (costs accuracy)
+                        approximation = F,            # if true, the AIC would be an approximation to save time (costs accuracy)
+                        trace = T                     # prints models as they run
+                        )
+
+
+
+```
+
+
+
+Check performance of ARIMA on the precovid data
+```{r}
+summary(fit_arima_missing_AD)
+checkresiduals(fit_arima_missing_AD)
+
+```
+
+
+
+Use the ARIMA model (with missing values) to forecast data into POSTCOVID timeframe
+```{r}
+forecast_arima_missing_AD <- forecast(fit_arima_missing_AD,
+                           h=8) # forecast 8 months (March 2020 to Oct 2020)
+
+autoplot(forecast_arima_missing_AD) # additional argument include = 12, would include only the last 12 months in precovid time frame
+
+```
+
+
+```{r}
+summary(forecast_arima_missing_AD)
+
+```
+
+
+
+
+Extract the forecast values with the upper and lower 80 and 95% CI limits, and view the actual values for the POSTCOVID time frame
+```{r}
+forecast_arima_df_missing_AD <- data.frame(forecast_arima_missing_AD$mean)
+lower_df_missing_AD <- as.data.frame(forecast_arima_missing_AD$lower,row.names = FALSE)
+upper_df_missing_AD <- as.data.frame(forecast_arima_missing_AD$upper,row.names = FALSE)
+postcovid_df_AD <- as.data.frame(AD_postcovid)
+
+
+forecast_arima_df_missing_AD 
+lower_df_missing_AD
+upper_df_missing_AD
+postcovid_df_AD 
+
+```
+
+
+
+
+Pull the values from forecast and actual values together in a data frame
+```{r}
+forecast_arima_df_missing_AD <- cbind(forecast_arima_df_missing_AD, lower_df_missing_AD, upper_df_missing_AD, postcovid_df_AD)
+
+column_names <-  c("mean", "lower80", "lower95", "upper80", "upper95", "actual")
+
+colnames(forecast_arima_df_missing_AD) <- column_names
+
+MONTH <- c("Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct")
+forecast_arima_df_missing_AD <- forecast_arima_df_missing_AD %>%
+  add_column(MONTH, .before = "mean")
+
+forecast_arima_df_missing_AD$MONTH <- factor(forecast_arima_df_missing_AD$MONTH, levels = c("Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct"))
+
+forecast_arima_df_missing_AD
+```
+
+
+
+
+Visualise the forcast prescription rates (with confidence intervals) versus the actual prescription rates in the POSTCOVID timeframe
+```{r}
+ggplot(data = forecast_arima_df_missing_AD,
+       aes(x=forecast_arima_df_missing_AD$MONTH,y=mean, group=1))+
+  geom_point()+
+  geom_line()+
+  geom_ribbon(aes(ymin=forecast_arima_df_missing_AD$lower95, ymax=forecast_arima_df_missing_AD$upper95), linetype=2, alpha=0.1)+
+  geom_ribbon(aes(ymin=forecast_arima_df_missing_AD$lower80, ymax=forecast_arima_df_missing_AD$upper80), linetype=2, alpha=0.2)+
+  geom_point(aes(x=forecast_arima_df_missing_AD$MONTH, y=forecast_arima_df_missing_AD$actual, group=1, col="red"))+
+  geom_line(aes(x=forecast_arima_df_missing_AD$MONTH, y=forecast_arima_df_missing_AD$actual, group=1, col="red"))+
+  labs(
+    title = paste("Individuals in Receipt of Antidepressant Medication immediately after COVID-19 lockdown"),
+    subtitle = paste("forecast vs. actual values"),
+    caption = paste("black = forecast values\nred = actual values\ndark grey band = 80% confidence interval\nlight grey band = 95% confidence interval"),
+    x = "Month",
+    y = "Individuals (n)"
+  )+
+  theme_minimal()+
+  theme(legend.position = "none")
+```
+
